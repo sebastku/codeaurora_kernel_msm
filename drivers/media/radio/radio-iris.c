@@ -38,6 +38,16 @@
 #include <media/radio-iris.h>
 #include <asm/unaligned.h>
 
+#ifndef V4L2_CTRL_CLASS_FM_RX
+#define V4L2_CTRL_CLASS_FM_RX 0x00a10000
+#define V4L2_CID_FM_RX_CLASS_BASE (V4L2_CTRL_CLASS_FM_RX | 0x900)
+#define V4L2_CID_TUNE_DEEMPHASIS  (V4L2_CID_FM_RX_CLASS_BASE + 1)
+#define V4L2_DEEMPHASIS_DISABLED  0
+#define V4L2_DEEMPHASIS_50_uS     1
+#define V4L2_DEEMPHASIS_75_uS     2
+#define V4L2_CID_RDS_RECEPTION    (V4L2_CID_FM_RX_CLASS_BASE + 2)
+#endif
+
 static unsigned int rds_buf = 100;
 static int oda_agt;
 static int grp_mask;
@@ -169,6 +179,15 @@ static struct v4l2_queryctrl iris_v4l2_queryctrl[] = {
 	{
 	.id	=	V4L2_CID_AUDIO_LOUDNESS,
 	.flags	=	V4L2_CTRL_FLAG_DISABLED,
+	},
+	{
+	.id	=	V4L2_CID_RDS_RECEPTION,
+	.type	=	V4L2_CTRL_TYPE_BOOLEAN,
+	.name	=	"RDS Reception",
+	.minimum	=	0,
+	.maximum	=	1,
+	.step		=	1,
+	.default_value	=	0,
 	},
 	{
 	.id	=	V4L2_CID_PRIVATE_IRIS_SRCHMODE,
@@ -2463,6 +2482,7 @@ static void hci_ev_raw_rds_group_data(struct radio_hci_dev *hdev,
 		struct sk_buff *skb)
 {
 	struct iris_device *radio;
+	struct kfifo *rds_buf;
 	unsigned char blocknum, index;
 	struct rds_grp_data temp;
 	unsigned int mask_bit;
@@ -2482,13 +2502,21 @@ static void hci_ev_raw_rds_group_data(struct radio_hci_dev *hdev,
 		return;
 	}
 
+	rds_buf = &radio->data_buf[IRIS_BUF_RAW_RDS];
 	for (blocknum = 0; blocknum < RDS_BLOCKS_NUM; blocknum++) {
-		temp.rdsBlk[blocknum].rdsLsb =
-			(skb->data[index]);
-		temp.rdsBlk[blocknum].rdsMsb =
-			(skb->data[index+1]);
+		struct v4l2_rds_data block;
+		block.lsb = temp.rdsBlk[blocknum].rdsLsb = skb->data[index];
+		block.msb = temp.rdsBlk[blocknum].rdsMsb = skb->data[index + 1];
+		block.block = blocknum | blocknum << 3 | 0x40;
+
 		index = index + 2;
+
+		kfifo_in_locked(rds_buf, &block, 3, &radio->buf_lock[IRIS_BUF_RAW_RDS]);
 	}
+
+	/* wake up read queue */
+	if (kfifo_len(rds_buf))
+		wake_up_interruptible(&radio->read_queue);
 
 	aid = AID(temp.rdsBlk[3].rdsLsb, temp.rdsBlk[3].rdsMsb);
 	gtc = GTC(temp.rdsBlk[1].rdsMsb);
@@ -3280,6 +3308,7 @@ static int iris_vidioc_g_ctrl(struct file *file, void *priv,
 				" %d\n", retval);
 		}
 		break;
+	case V4L2_CID_RDS_RECEPTION:
 	case V4L2_CID_PRIVATE_IRIS_RDSON:
 		if (radio->mode == FM_RECV) {
 			retval = hci_cmd(HCI_FM_GET_RECV_CONF_CMD,
@@ -4000,6 +4029,23 @@ static int iris_vidioc_s_ctrl(struct file *file, void *priv,
 			FMDERR("%s: fm is not in proper state\n", __func__);
 			goto END;
 			break;
+		}
+		break;
+	case V4L2_CID_RDS_RECEPTION:
+		if (radio->mode != FM_RECV) {
+			retval = -EINVAL;
+			FMDERR("%s: fm is not in proper state\n", __func__);
+			goto END;
+		}
+		saved_val = radio->recv_conf.rds_std;
+		radio->recv_conf.rds_std = ctrl->value;
+		retval = hci_set_fm_recv_conf(
+				&radio->recv_conf,
+					radio->fm_hdev);
+		if (retval < 0) {
+			FMDERR("Error in rds_std");
+			radio->recv_conf.rds_std = saved_val;
+			goto END;
 		}
 		break;
 	case V4L2_CID_PRIVATE_IRIS_RDSON:
@@ -4741,7 +4787,10 @@ static int iris_vidioc_g_tuner(struct file *file, void *priv,
 		tuner->rangehigh =
 			radio->recv_conf.band_high_limit * TUNE_PARAM;
 		tuner->rxsubchans = V4L2_TUNER_SUB_MONO | V4L2_TUNER_SUB_STEREO;
-		tuner->capability = V4L2_TUNER_CAP_LOW;
+		tuner->capability = V4L2_TUNER_CAP_LOW |
+				    V4L2_TUNER_CAP_STEREO |
+				    V4L2_TUNER_CAP_RDS |
+				    V4L2_TUNER_CAP_RDS_BLOCK_IO;
 		tuner->signal = radio->fm_st_rsp.station_rsp.rssi;
 		tuner->audmode = radio->fm_st_rsp.station_rsp.stereo_prg;
 		tuner->afc = 0;
@@ -4872,6 +4921,57 @@ static int iris_vidioc_s_frequency(struct file *file, void *priv,
 	return retval;
 }
 
+static ssize_t iris_fops_read(struct file *file, char __user *buf,
+			      size_t count, loff_t *ppos)
+{
+	struct iris_device *radio = video_get_drvdata(video_devdata(file));
+	struct kfifo *rds_buf;
+	if (unlikely(radio == NULL))
+		return -EINVAL;
+
+	if (unlikely(buf == NULL))
+		return -EINVAL;
+
+	rds_buf = &radio->data_buf[IRIS_BUF_RAW_RDS];
+	/* block if no new data available */
+	while (!kfifo_len(rds_buf)) {
+		if (file->f_flags & O_NONBLOCK)
+			return -EWOULDBLOCK;
+		if (wait_event_interruptible(radio->read_queue,
+			kfifo_len(rds_buf)) < 0)
+			return -EINTR;
+	}
+
+	/* calculate block count from byte count */
+	count /= BYTES_PER_BLOCK;
+
+	/* check if we can write to the user buffer */
+	if (!access_ok(VERIFY_WRITE, buf, count * BYTES_PER_BLOCK))
+		return -EFAULT;
+
+	/* copy RDS block out of internal buffer and to user buffer */
+	return kfifo_out_locked(rds_buf, buf, count * BYTES_PER_BLOCK,
+				&radio->buf_lock[IRIS_BUF_RAW_RDS]);
+}
+
+static unsigned int iris_fops_poll(struct file *file, poll_table *wait)
+{
+	struct iris_device *radio = video_get_drvdata(video_devdata(file));
+	struct kfifo *rds_buf;
+	if (unlikely(radio == NULL))
+		return POLLERR;
+
+	rds_buf = &radio->data_buf[IRIS_BUF_RAW_RDS];
+	if (kfifo_len(rds_buf))
+		return POLLIN | POLLRDNORM;
+
+	poll_wait(file, &radio->read_queue, wait);
+	if (kfifo_len(rds_buf))
+		return POLLIN | POLLRDNORM;
+
+	return 0;
+}
+
 static int iris_fops_release(struct file *file)
 {
 	struct iris_device *radio = video_get_drvdata(video_devdata(file));
@@ -4987,7 +5087,9 @@ static int iris_vidioc_querycap(struct file *file, void *priv,
 	strlcpy(radio->g_cap.driver, DRIVER_NAME, sizeof(radio->g_cap.driver));
 	strlcpy(radio->g_cap.card, DRIVER_CARD, sizeof(radio->g_cap.card));
 
-	radio->g_cap.capabilities = V4L2_CAP_TUNER | V4L2_CAP_RADIO;
+	radio->g_cap.capabilities = V4L2_CAP_TUNER |
+				    V4L2_CAP_RADIO |
+				    V4L2_CAP_RDS_CAPTURE;
 	capability->capabilities = radio->g_cap.capabilities;
 	return 0;
 }
@@ -5095,6 +5197,8 @@ static const struct v4l2_ioctl_ops iris_ioctl_ops = {
 
 static const struct v4l2_file_operations iris_fops = {
 	.owner = THIS_MODULE,
+	.read           = iris_fops_read,
+	.poll           = iris_fops_poll,
 	.unlocked_ioctl = video_ioctl2,
 	.release        = iris_fops_release,
 };
