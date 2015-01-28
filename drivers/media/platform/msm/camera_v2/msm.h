@@ -1,4 +1,5 @@
 /* Copyright (c) 2012-2013, The Linux Foundation. All rights reserved.
+ * Copyright (C) 2013 Sony Mobile Communications AB.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -14,6 +15,7 @@
 #define _MSM_H
 
 #include <linux/version.h>
+#include <linux/completion.h>
 #include <linux/i2c.h>
 #include <linux/videodev2.h>
 #include <linux/pm_qos.h>
@@ -29,7 +31,11 @@
 #include <media/videobuf2-msm-mem.h>
 #include <media/msmb_camera.h>
 
+#if defined(CONFIG_SONY_CAM_V4L2)
+#define MSM_POST_EVT_TIMEOUT 4000
+#else
 #define MSM_POST_EVT_TIMEOUT 5000
+#endif
 #define MSM_POST_EVT_NOTIMEOUT 0xFFFFFFFF
 
 struct msm_video_device {
@@ -70,7 +76,7 @@ struct msm_command {
 struct msm_command_ack {
 	struct list_head list;
 	struct msm_queue_head command_q;
-	wait_queue_head_t wait;
+	struct completion wait_complete;
 	int stream_id;
 };
 

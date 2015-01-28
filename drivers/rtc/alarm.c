@@ -1,6 +1,7 @@
 /* drivers/rtc/alarm.c
  *
  * Copyright (C) 2007-2009 Google, Inc.
+ * Copyright (C) 2013 Sony Mobile Communications AB.
  *
  * This software is licensed under the terms of the GNU General Public
  * License version 2, as published by the Free Software Foundation, and
@@ -22,6 +23,8 @@
 #include <linux/sched.h>
 #include <linux/spinlock.h>
 #include <linux/wakelock.h>
+#include <linux/suspend.h>
+#include <linux/moduleparam.h>
 
 #include <asm/mach/time.h>
 
@@ -37,6 +40,8 @@
 static int debug_mask = ANDROID_ALARM_PRINT_ERROR | \
 			ANDROID_ALARM_PRINT_INIT_STATUS;
 module_param_named(debug_mask, debug_mask, int, S_IRUGO | S_IWUSR | S_IWGRP);
+static int suspend_threshold = 1;
+module_param(suspend_threshold, int, S_IRUGO | S_IWUSR | S_IWGRP);
 
 #define pr_alarm(debug_level_mask, args...) \
 	do { \
@@ -65,17 +70,32 @@ struct alarm_queue {
 static struct rtc_device *alarm_rtc_dev;
 static DEFINE_SPINLOCK(alarm_slock);
 static DEFINE_MUTEX(alarm_setrtc_mutex);
+static DEFINE_MUTEX(power_on_alarm_mutex);
 static struct wake_lock alarm_rtc_wake_lock;
 static struct platform_device *alarm_platform_dev;
 struct alarm_queue alarms[ANDROID_ALARM_TYPE_COUNT];
 static bool suspended;
 static long power_on_alarm;
 
-static void alarm_shutdown(struct platform_device *dev);
-void set_power_on_alarm(long secs)
+static int set_alarm_time_to_rtc(const long);
+
+void set_power_on_alarm(long secs, bool enable)
 {
-	power_on_alarm = secs;
-	alarm_shutdown(NULL);
+	mutex_lock(&power_on_alarm_mutex);
+	if (enable) {
+		power_on_alarm = secs;
+	} else {
+		if (power_on_alarm && power_on_alarm != secs) {
+			pr_alarm(FLOW, "power-off alarm mismatch: \
+				previous=%ld, now=%ld\n",
+				power_on_alarm, secs);
+		}
+		else
+			power_on_alarm = 0;
+	}
+
+	set_alarm_time_to_rtc(power_on_alarm);
+	mutex_unlock(&power_on_alarm_mutex);
 }
 
 
@@ -466,7 +486,7 @@ static int alarm_suspend(struct platform_device *pdev, pm_message_t state)
 			"rtc alarm set at %ld, now %ld, rtc delta %ld.%09ld\n",
 			rtc_alarm_time, rtc_current_time,
 			rtc_delta.tv_sec, rtc_delta.tv_nsec);
-		if (rtc_current_time + 1 >= rtc_alarm_time) {
+		if (rtc_current_time + suspend_threshold >= rtc_alarm_time) {
 			pr_alarm(SUSPEND, "alarm about to go off\n");
 			rtc_time_to_tm(0, &rtc_alarm.time);
 			rtc_alarm.enabled = 0;
@@ -511,28 +531,23 @@ static int alarm_resume(struct platform_device *pdev)
 	return 0;
 }
 
-static void alarm_shutdown(struct platform_device *dev)
+static int set_alarm_time_to_rtc(const long power_on_time)
 {
 	struct timespec wall_time;
 	struct rtc_time rtc_time;
 	struct rtc_wkalrm alarm;
-	unsigned long flags;
 	long rtc_secs, alarm_delta, alarm_time;
-	int rc;
+	int rc = -EINVAL;
 
-	spin_lock_irqsave(&alarm_slock, flags);
-
-	if (!power_on_alarm) {
-		spin_unlock_irqrestore(&alarm_slock, flags);
+	if (power_on_time <= 0) {
 		goto disable_alarm;
 	}
-	spin_unlock_irqrestore(&alarm_slock, flags);
 
 	rtc_read_time(alarm_rtc_dev, &rtc_time);
 	getnstimeofday(&wall_time);
 	rtc_tm_to_time(&rtc_time, &rtc_secs);
 	alarm_delta = wall_time.tv_sec - rtc_secs;
-	alarm_time = power_on_alarm - alarm_delta;
+	alarm_time = power_on_time - alarm_delta;
 
 	/*
 	 * Substract ALARM_DELTA from actual alarm time
@@ -548,16 +563,19 @@ static void alarm_shutdown(struct platform_device *dev)
 	rtc_time_to_tm(alarm_time, &alarm.time);
 	alarm.enabled = 1;
 	rc = rtc_set_alarm(alarm_rtc_dev, &alarm);
-	if (rc)
+	if (rc){
 		pr_alarm(ERROR, "Unable to set power-on alarm\n");
+		goto disable_alarm;
+	}
 	else
 		pr_alarm(FLOW, "Power-on alarm set to %lu\n",
 				alarm_time);
 
-	return;
+	return 0;
 
 disable_alarm:
 	rtc_alarm_irq_enable(alarm_rtc_dev, 0);
+	return rc;
 }
 
 static struct rtc_task alarm_rtc_task = {
@@ -619,10 +637,69 @@ static struct class_interface rtc_alarm_interface = {
 static struct platform_driver alarm_driver = {
 	.suspend = alarm_suspend,
 	.resume = alarm_resume,
-	.shutdown = alarm_shutdown,
 	.driver = {
 		.name = "alarm"
 	}
+};
+
+static int alarm_pm_notifier(struct notifier_block *nb, unsigned long event,
+		void *dummy)
+{
+	struct rtc_time rtc_current_rtc_time;
+	struct timespec wall_time;
+	unsigned long rtc_current_time;
+	unsigned long rtc_alarm_time;
+	unsigned long flags;
+	struct timespec rtc_delta;
+	struct alarm_queue *wakeup_queue = NULL;
+	struct alarm_queue *tmp_queue = NULL;
+
+	switch (event) {
+	case PM_SUSPEND_PREPARE:
+		spin_lock_irqsave(&alarm_slock, flags);
+		tmp_queue = &alarms[ANDROID_ALARM_RTC_WAKEUP];
+		if (tmp_queue->first)
+			wakeup_queue = tmp_queue;
+		tmp_queue = &alarms[ANDROID_ALARM_ELAPSED_REALTIME_WAKEUP];
+		if (tmp_queue->first && (!wakeup_queue ||
+				hrtimer_get_expires(&tmp_queue->timer).tv64 <
+				hrtimer_get_expires(&wakeup_queue->timer).tv64))
+			wakeup_queue = tmp_queue;
+		if (wakeup_queue) {
+			spin_unlock_irqrestore(&alarm_slock, flags);
+			rtc_read_time(alarm_rtc_dev, &rtc_current_rtc_time);
+			spin_lock_irqsave(&alarm_slock, flags);
+			getnstimeofday(&wall_time);
+			rtc_tm_to_time(&rtc_current_rtc_time,
+					&rtc_current_time);
+			set_normalized_timespec(&rtc_delta,
+					wall_time.tv_sec - rtc_current_time,
+					wall_time.tv_nsec);
+			rtc_alarm_time = timespec_sub(ktime_to_timespec(
+				hrtimer_get_expires(&wakeup_queue->timer)),
+				rtc_delta).tv_sec;
+			if (rtc_current_time + suspend_threshold >=
+				rtc_alarm_time) {
+				pr_info("alarm about to go off\n");
+				wake_lock_timeout(&alarm_rtc_wake_lock, 2 * HZ);
+				spin_unlock_irqrestore(&alarm_slock, flags);
+				return NOTIFY_BAD;
+			}
+		}
+		spin_unlock_irqrestore(&alarm_slock, flags);
+
+		break;
+	default:
+		break;
+	}
+
+	return NOTIFY_DONE;
+
+}
+
+static struct notifier_block alarm_pm_nb = {
+	.notifier_call = alarm_pm_notifier,
+	.priority = 0,
 };
 
 static int __init alarm_late_init(void)
@@ -643,6 +720,7 @@ static int __init alarm_late_init(void)
 			timespec_to_ktime(timespec_sub(tmp_time, system_time));
 
 	spin_unlock_irqrestore(&alarm_slock, flags);
+	register_pm_notifier(&alarm_pm_nb);
 	return 0;
 }
 
@@ -679,6 +757,7 @@ err1:
 
 static void  __exit alarm_exit(void)
 {
+	unregister_pm_notifier(&alarm_pm_nb);
 	class_interface_unregister(&rtc_alarm_interface);
 	wake_lock_destroy(&alarm_rtc_wake_lock);
 	platform_driver_unregister(&alarm_driver);

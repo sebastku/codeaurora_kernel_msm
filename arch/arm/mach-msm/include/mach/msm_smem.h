@@ -8,6 +8,10 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
+ *
+ * NOTE: This file has been modified by Sony Mobile Communications AB.
+ * Modifications are Copyright (c) 2014 Sony Mobile Communications AB,
+ * and licensed under the license of the file.
  */
 
 #ifndef _ARCH_ARM_MACH_MSM_SMEM_H_
@@ -39,6 +43,17 @@ enum {
 #define SMEM_ANY_HOST_FLAG 2
 
 #define SMEM_NUM_SMD_STREAM_CHANNELS        64
+
+/**
+ * OVERFLOW_ADD_UNSIGNED() - check for unsigned overflow
+ *
+ * @type: type to check for overflow
+ * @a: left value to use
+ * @b: right value to use
+ * @returns: true if a + b will result in overflow; false otherwise
+ */
+#define OVERFLOW_ADD_UNSIGNED(type, a, b) \
+	(((type)~0 - (a)) < (b) ? true : false)
 
 enum {
 	/* fixed items */
@@ -197,6 +212,13 @@ phys_addr_t smem_virt_to_phys(void *smem_address);
  */
 int __init msm_smem_init(void);
 
+/**
+ * smem_is_volte_restart() - Checks if restart is triggerred by VOLTE
+ *
+ * @returns: 1 if VOLTE triggerred the modem restart and 0 otherwise.
+ */
+bool smem_is_volte_restart(void);
+
 #else
 static inline void *smem_alloc(unsigned id, unsigned size)
 {
@@ -243,6 +265,10 @@ static inline phys_addr_t smem_virt_to_phys(void *smem_address)
 	return (phys_addr_t) NULL;
 }
 static int __init msm_smem_init(void)
+{
+	return 0;
+}
+static bool smem_is_volte_restart(void)
 {
 	return 0;
 }
