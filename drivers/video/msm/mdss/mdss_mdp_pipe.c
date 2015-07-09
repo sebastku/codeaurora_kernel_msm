@@ -1113,6 +1113,12 @@ static int mdss_mdp_pipe_solidfill_setup(struct mdss_mdp_pipe *pipe)
 
 	pr_debug("solid fill setup on pnum=%d\n", pipe->num);
 
+	ret = mdss_mdp_scale_setup(pipe);
+	if (ret) {
+		pr_err("scale setup error for pnum=%d\n", pipe->num);
+		return ret;
+	}
+
 	ret = mdss_mdp_image_setup(pipe, NULL);
 	if (ret) {
 		pr_err("image setup error for pnum=%d\n", pipe->num);

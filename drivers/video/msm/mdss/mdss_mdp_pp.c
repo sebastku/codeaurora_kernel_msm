@@ -901,7 +901,7 @@ static void pp_update_pa_v2_vig_opmode(struct pp_sts_type *pp_sts,
 		*opmode |= MDSS_MDP_VIG_OP_PA_MEM_COL_FOL_MASK;
 }
 
-static int mdss_mdp_scale_setup(struct mdss_mdp_pipe *pipe)
+int mdss_mdp_scale_setup(struct mdss_mdp_pipe *pipe)
 {
 	u32 scale_config = 0;
 	int init_phasex = 0, init_phasey = 0;
