@@ -1110,6 +1110,7 @@ static int mdss_mdp_pipe_solidfill_setup(struct mdss_mdp_pipe *pipe)
 {
 	int ret;
 	u32 secure, format, unpack;
+	u32 opmode;
 
 	pr_debug("solid fill setup on pnum=%d\n", pipe->num);
 
@@ -1126,6 +1127,7 @@ static int mdss_mdp_pipe_solidfill_setup(struct mdss_mdp_pipe *pipe)
 	}
 
 	format = MDSS_MDP_FMT_SOLID_FILL;
+	opmode = pipe->bwc_mode;
 	secure = (pipe->flags & MDP_SECURE_OVERLAY_SESSION ? 0xF : 0x0);
 
 	/* support ARGB color format only */
@@ -1135,6 +1137,7 @@ static int mdss_mdp_pipe_solidfill_setup(struct mdss_mdp_pipe *pipe)
 	mdss_mdp_pipe_write(pipe, MDSS_MDP_REG_SSPP_SRC_CONSTANT_COLOR,
 		pipe->bg_color);
 	mdss_mdp_pipe_write(pipe, MDSS_MDP_REG_SSPP_SRC_UNPACK_PATTERN, unpack);
+	mdss_mdp_pipe_write(pipe, MDSS_MDP_REG_SSPP_SRC_OP_MODE, opmode);
 	mdss_mdp_pipe_write(pipe, MDSS_MDP_REG_SSPP_SRC_ADDR_SW_STATUS, secure);
 
 	return 0;
