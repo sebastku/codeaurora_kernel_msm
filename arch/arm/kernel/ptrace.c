@@ -929,13 +929,6 @@ asmlinkage int syscall_trace(int why, struct pt_regs *regs, int scno)
 		return scno;
 
 	/*
-	* IP is used to denote syscall entry/exit:
-	* IP = 0 -> entry, =1 -> exit
-	*/
-	ip = regs->ARM_ip;
-	regs->ARM_ip = why;
-
-	/*
 	 * IP is used to denote syscall entry/exit:
 	 * IP = 0 -> entry, =1 -> exit
 	 */
