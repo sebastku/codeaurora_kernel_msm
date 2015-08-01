@@ -70,7 +70,7 @@
 			preset_x_max = <1919>;
 			preset_y_max = <1199>;
 			preset_n_fingers = <10>;
-			por_delay_after = <200>;
+			delay_after_hw_reset = <200>;
 			wakeup_gesture_supported = <1>;
 			wakeup_gesture_large_panel = <1>;
 			wakeup_gesture_lpm_disabled = <0>;
@@ -103,7 +103,7 @@
 	/* I2C : BLSP11 */
 	i2c@f9967000 {
 		ti_lp855x@2c {
-			compatible = "Texas Instruments,lp855x";
+			compatible = "ti,lp8556";
 			reg = <0x2c>;
 			status = "ok";
 			bl_enable = <&msmgpio 69 0>;
