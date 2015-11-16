@@ -21,13 +21,11 @@
 #include "msm8974-mtp.dtsi"
 #include "msm8974pro-ab-shinano_common.dtsi"
 #include "msm8974pro-ab-shinano_sirius.dtsi"
-#include "msm8974pro-ab-camera-sensor-sirius.dtsi"
+#include "msm8974pro-ab-shinano_sirius_camera.dtsi"
 #include "dsi-panel-sirius.dtsi"
 
 / {
 	model = "SoMC Sirius ROW";
 	compatible = "somc,sirius-row", "qcom,msm8974";
         qcom,board-id = <8 0>;
-	somc,space-no = "1276-9754",	/* Gina */
-			"1278-9570";	/* Rita */
 };

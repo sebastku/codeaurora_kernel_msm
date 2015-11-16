@@ -56,7 +56,11 @@ int BCMFASTPATH dhd_flow_queue_overflow(flow_queue_t *queue, void *pkt);
 #define FLOW_QUEUE_PKT_NEXT(p)          PKTLINK(p)
 #define FLOW_QUEUE_PKT_SETNEXT(p, x)    PKTSETLINK((p), (x))
 
+#ifdef EAPOL_PKT_PRIO
+const uint8 prio2ac[8] = { 0, 1, 1, 0, 2, 2, 3, 7 };
+#else
 const uint8 prio2ac[8] = { 0, 1, 1, 0, 2, 2, 3, 3 };
+#endif /* EAPOL_PKT_PRIO  */
 const uint8 prio2tid[8] = { 0, 1, 2, 3, 4, 5, 6, 7 };
 
 int BCMFASTPATH
@@ -208,7 +212,8 @@ dhd_flow_rings_init(dhd_pub_t *dhdp, uint32 num_flow_rings)
 
 	/* Allocate per interface hash table */
 	if_flow_lkup_sz = sizeof(if_flow_lkup_t) * DHD_MAX_IFS;
-	if_flow_lkup = (if_flow_lkup_t *)MALLOC(dhdp->osh, if_flow_lkup_sz);
+	if_flow_lkup = (if_flow_lkup_t *)DHD_OS_PREALLOC(dhdp,
+			DHD_PREALLOC_IF_FLOW_LKUP, if_flow_lkup_sz);
 	if (if_flow_lkup == NULL) {
 		DHD_ERROR(("%s: if flow lkup alloc failure\n", __FUNCTION__));
 		goto fail;
@@ -304,7 +309,8 @@ void dhd_flow_rings_deinit(dhd_pub_t *dhdp)
 	/* Destruct the per interface flow lkup table */
 	if (dhdp->if_flow_lkup != NULL) {
 		if_flow_lkup_sz = sizeof(if_flow_lkup_t) * DHD_MAX_IFS;
-		MFREE(dhdp->osh, dhdp->if_flow_lkup, if_flow_lkup_sz);
+		memset(dhdp->if_flow_lkup, 0, sizeof(if_flow_lkup_sz));
+		DHD_OS_PREFREE(dhdp, dhdp->if_flow_lkup, if_flow_lkup_sz);
 		dhdp->if_flow_lkup = NULL;
 	}
 
@@ -767,7 +773,7 @@ int dhd_update_flow_prio_map(dhd_pub_t *dhdp, uint8 map)
 	uint16 flowid;
 	flow_ring_node_t *flow_ring_node;
 
-	if (map > DHD_FLOW_PRIO_TID_MAP)
+	if (map > DHD_FLOW_PRIO_LLR_MAP)
 		return BCME_BADOPTION;
 
 	/* Check if we need to change prio map */
