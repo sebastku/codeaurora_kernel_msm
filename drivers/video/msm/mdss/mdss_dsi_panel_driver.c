@@ -322,19 +322,19 @@ static void mdss_dsi_panel_bklt_dcs(struct mdss_dsi_ctrl_pdata *ctrl,
 
 static int mdss_dsi_request_gpios(struct mdss_dsi_ctrl_pdata *ctrl_pdata)
 {
-	int rc = 0;
+	int rc;
 
 	if (gpio_is_valid(ctrl_pdata->disp_en_gpio)) {
 		rc = gpio_request(ctrl_pdata->disp_en_gpio,
 						"disp_enable");
-		if (rc) {
+		if (rc && rc != -EBUSY) {
 			pr_err("request disp_en gpio failed, rc=%d\n",
 				       rc);
 			goto disp_en_gpio_err;
 		}
 	}
 	rc = gpio_request(ctrl_pdata->rst_gpio, "disp_rst_n");
-	if (rc) {
+	if (rc && rc != -EBUSY) {
 		pr_err("request reset gpio failed, rc=%d\n",
 			rc);
 		goto rst_gpio_err;
@@ -342,7 +342,7 @@ static int mdss_dsi_request_gpios(struct mdss_dsi_ctrl_pdata *ctrl_pdata)
 	if (gpio_is_valid(ctrl_pdata->bklt_en_gpio)) {
 		rc = gpio_request(ctrl_pdata->bklt_en_gpio,
 						"bklt_enable");
-		if (rc) {
+		if (rc && rc != -EBUSY) {
 			pr_err("request bklt gpio failed, rc=%d\n",
 				       rc);
 			goto bklt_en_gpio_err;
@@ -350,13 +350,13 @@ static int mdss_dsi_request_gpios(struct mdss_dsi_ctrl_pdata *ctrl_pdata)
 	}
 	if (gpio_is_valid(ctrl_pdata->mode_gpio)) {
 		rc = gpio_request(ctrl_pdata->mode_gpio, "panel_mode");
-		if (rc) {
+		if (rc && rc != -EBUSY) {
 			pr_err("request panel mode gpio failed,rc=%d\n",
 								rc);
 			goto mode_gpio_err;
 		}
 	}
-	return rc;
+	return 0;
 
 mode_gpio_err:
 	if (gpio_is_valid(ctrl_pdata->bklt_en_gpio))
@@ -457,6 +457,10 @@ static int mdss_dsi_panel_reset_seq(struct mdss_panel_data *pdata, int enable)
 	{
 		if (enable) {
 			usleep_range(1000, 1000);
+			if (gpio_is_valid(ctrl_pdata->bklt_en_gpio)) {
+				gpio_set_value(ctrl_pdata->bklt_en_gpio, 1);
+				usleep_range(500, 1000);
+			}
 			if (gpio_is_valid(spec_pdata->disp_p5)) {
 				gpio_direction_output(spec_pdata->disp_p5, 1);
 				usleep_range(1000, 1000);
@@ -476,6 +480,8 @@ static int mdss_dsi_panel_reset_seq(struct mdss_panel_data *pdata, int enable)
 			gpio_direction_output(ctrl_pdata->rst_gpio, 1);
 			msleep(150);
 		} else {
+			gpio_set_value(ctrl_pdata->bklt_en_gpio, 0);
+			usleep_range(1000, 1000);
 			gpio_direction_output(ctrl_pdata->rst_gpio, 0);
 			usleep_range(1000, 1000);
 			gpio_direction_output(spec_pdata->disp_n5, 0);
@@ -1669,6 +1675,15 @@ static inline int mdss_dsi_panel_power_off_ex(struct mdss_panel_data *pdata)
 		pr_err("%s: Invalid input data\n", __func__);
 		return -EINVAL;
 	}
+
+
+	/*
+	 * Continuous splash and video mode required the first
+	 * pinctrl setup not to be done: set disp_on_in_boot to
+	 * false in order to resume normal mdss pinctrl operation.
+	 * Now we can safely shut mdss/display down and back up.
+	 */
+	spec_pdata->disp_on_in_boot = false;
 
 	/* If we have to detect the panel NOW, don't power it off */
 	if (skip_first_off && spec_pdata->panel_detect) {
@@ -4046,6 +4061,8 @@ int mdss_dsi_panel_init(struct device_node *node,
 		return -EINVAL;
 	}
 
+	spec_pdata->disp_on_in_boot = display_on_in_boot;
+
 	dsi_ctrl_np = of_parse_phandle(node,
 		"qcom,mdss-dsi-panel-controller", 0);
 	if (!dsi_ctrl_np) {
@@ -4084,7 +4101,7 @@ int mdss_dsi_panel_init(struct device_node *node,
 				__func__, vsn_gpio);
 	}
 
-	if ((!display_on_in_boot) || (!index))
+	if ((!spec_pdata->disp_on_in_boot) || (!index))
 		mdss_dsi_pinctrl_set_state(ctrl_pdata, true);
 
 	/* Panel detection setup */
@@ -4132,7 +4149,7 @@ exit_lcd_id:
 		pr_info("%s: physical:%d\n", __func__, spec_pdata->adc_uv);
 	}
 
-	if (!display_on_in_boot)
+	if (!spec_pdata->disp_on_in_boot)
 		mdss_dsi_pinctrl_set_state(ctrl_pdata, false);
 
 	alt_panelid_cmd = of_property_read_bool(node,
@@ -4147,7 +4164,7 @@ exit_lcd_id:
 		goto error;
 	}
 
-	cont_splash_enabled = display_on_in_boot;
+	cont_splash_enabled = spec_pdata->disp_on_in_boot;
 
 	if (!cont_splash_enabled) {
 		pr_info("%s:%d Continuous splash flag not found.\n",

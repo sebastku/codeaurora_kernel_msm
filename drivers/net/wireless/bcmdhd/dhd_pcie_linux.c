@@ -48,8 +48,15 @@
 #include <pcicfg.h>
 #include <dhd_pcie.h>
 #include <dhd_linux.h>
+#ifdef DHD_WAKE_STATUS
+#include <linux/wakeup_reason.h>
+#endif
 #if defined (CONFIG_ARCH_MSM)
+#ifdef CONFIG_64BIT
+#include <linux/msm_pcie.h>
+#else
 #include <mach/msm_pcie.h>
+#endif
 #endif
 
 #define PCI_CFG_RETRY 		10
@@ -90,9 +97,15 @@ typedef struct dhdpcie_info
 	uint16		last_intrstatus;	/* to cache intrstatus */
 	int	irq;
 	char pciname[32];
-
+	struct pci_saved_state* default_state;
 	struct pci_saved_state* state;
-
+	wifi_adapter_info_t *adapter;
+#ifdef DHD_WAKE_STATUS
+	spinlock_t	pcie_lock;
+	unsigned int	total_wake_count;
+	int	pkt_wake;
+	int	wake_irq;
+#endif
 } dhdpcie_info_t;
 
 
@@ -167,7 +180,7 @@ static int dhdpcie_set_suspend_resume(struct pci_dev *pdev, bool state)
 	int ret = 0;
 	dhdpcie_info_t *pch = pci_get_drvdata(pdev);
 	dhd_bus_t *bus = NULL;
-	DHD_ERROR(("%s Enter with state :%x\n", __FUNCTION__, state));
+	DHD_INFO(("%s Enter with state :%x\n", __FUNCTION__, state));
 	if (pch) {
 		bus = pch->bus;
 	}
@@ -186,38 +199,81 @@ static int dhdpcie_set_suspend_resume(struct pci_dev *pdev, bool state)
 
 		ret = dhdpcie_bus_suspend(bus, state);
 	}
-	DHD_ERROR(("%s Exit with state :%d\n", __FUNCTION__, ret));
+	DHD_INFO(("%s Exit with state :%d\n", __FUNCTION__, ret));
 	return ret;
 }
 
 static int dhdpcie_pci_suspend(struct pci_dev * pdev, pm_message_t state)
 {
 	BCM_REFERENCE(state);
-	DHD_ERROR(("%s Enter with event %x\n", __FUNCTION__, state.event));
+	DHD_INFO(("%s Enter with event %x\n", __FUNCTION__, state.event));
 	return dhdpcie_set_suspend_resume(pdev, TRUE);
 }
 
 static int dhdpcie_pci_resume(struct pci_dev *pdev)
 {
-	DHD_ERROR(("%s Enter\n", __FUNCTION__));
+	DHD_INFO(("%s Enter\n", __FUNCTION__));
 	return dhdpcie_set_suspend_resume(pdev, FALSE);
 }
+
+int dhd_os_get_wake_irq(dhd_pub_t *pub);
 
 static int dhdpcie_suspend_dev(struct pci_dev *dev)
 {
 	int ret;
+	dhdpcie_info_t *pch = pci_get_drvdata(dev);
 	dhdpcie_pme_active(dev, TRUE);
 	pci_save_state(dev);
+	pch->state = pci_store_saved_state(dev);
 	pci_enable_wake(dev, PCI_D0, TRUE);
 	if (pci_is_enabled(dev))
 		pci_disable_device(dev);
 	ret = pci_set_power_state(dev, PCI_D3hot);
+#ifdef CONFIG_PARTIALRESUME
+	wifi_process_partial_resume(pch->adapter, WIFI_PR_INIT);
+#endif
 	return ret;
 }
+
+#ifdef DHD_WAKE_STATUS
+int bcmpcie_get_total_wake(struct dhd_bus *bus)
+{
+	dhdpcie_info_t *pch = pci_get_drvdata(bus->dev);
+
+	return pch->total_wake_count;
+}
+
+int bcmpcie_set_get_wake(struct dhd_bus *bus, int flag)
+{
+	dhdpcie_info_t *pch = pci_get_drvdata(bus->dev);
+	unsigned long flags;
+	int ret;
+
+	spin_lock_irqsave(&pch->pcie_lock, flags);
+
+	ret = pch->pkt_wake;
+	pch->total_wake_count += flag;
+	pch->pkt_wake = flag;
+
+	spin_unlock_irqrestore(&pch->pcie_lock, flags);
+	return ret;
+}
+#endif
 
 static int dhdpcie_resume_dev(struct pci_dev *dev)
 {
 	int err = 0;
+	dhdpcie_info_t *pch = pci_get_drvdata(dev);
+
+#ifdef DHD_WAKE_STATUS
+	if (check_wakeup_reason(pch->wake_irq)) {
+#ifdef CONFIG_PARTIALRESUME
+		wifi_process_partial_resume(pch->adapter, WIFI_PR_NOTIFY_RESUME);
+#endif
+		bcmpcie_set_get_wake(pch->bus, 1);
+	}
+#endif
+	pci_load_and_free_saved_state(dev, &pch->state);
 	pci_restore_state(dev);
 	err = pci_enable_device(dev);
 	if (err) {
@@ -320,6 +376,18 @@ dhdpcie_pci_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 		"(good PCI location)\n", pdev->bus->number,
 		PCI_SLOT(pdev->devfn), pdev->vendor, pdev->device);
 
+#if defined (BCMPCIE) && defined(CONFIG_WIFI_CONTROL_FUNC)
+	if (msm_pcie_pm_control(MSM_PCIE_RESUME, pdev->bus->number, pdev, NULL, 0)) {
+		DHD_ERROR(("%s Failed to resume PCIE link\n", __FUNCTION__));
+		return -ENODEV;
+	}
+
+	if (msm_pcie_recover_config(pdev)) {
+		DHD_ERROR(("%s Failed to recover PCIE config\n", __FUNCTION__));
+		return -ENODEV;
+	}
+#endif
+
 	if (dhdpcie_init (pdev)) {
 		DHD_ERROR(("%s: PCIe Enumeration failed\n", __FUNCTION__));
 		return -ENODEV;
@@ -337,7 +405,7 @@ dhdpcie_detach(dhdpcie_info_t *pch)
 	if (pch) {
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 0, 0))
 		if (!dhd_download_fw_on_driverload)
-			pci_load_and_free_saved_state(pch->dev, &pch->state);
+			pci_load_and_free_saved_state(pch->dev, &pch->default_state);
 #endif /* LINUX_VERSION_CODE >= KERNEL_VERSION(3, 0, 0) */
 		MFREE(osh, pch, sizeof(dhdpcie_info_t));
 	}
@@ -456,9 +524,9 @@ int dhdpcie_get_resource(dhdpcie_info_t *dhdpcie_info)
 			 * in case of built in driver
 			 */
 			pci_save_state(pdev);
-			dhdpcie_info->state = pci_store_saved_state(pdev);
+			dhdpcie_info->default_state = pci_store_saved_state(pdev);
 
-			if (dhdpcie_info->state == NULL) {
+			if (dhdpcie_info->default_state == NULL) {
 				DHD_ERROR(("%s pci_store_saved_state returns NULL\n",
 					__FUNCTION__));
 				REG_UNMAP(dhdpcie_info->regs);
@@ -515,6 +583,7 @@ void dhdpcie_linkdown_cb(struct msm_pcie_notify *noti)
 			DHD_ERROR(("%s: Event HANG send up "
 				"due to PCIe linkdown\n", __FUNCTION__));
 			bus->islinkdown = TRUE;
+			dhd->busstate = DHD_BUS_DOWN;
 			DHD_OS_WAKE_LOCK_CTRL_TIMEOUT_ENABLE(dhd, DHD_EVENT_TIMEOUT_MS);
 			dhd_os_check_hang(dhd, 0, -ETIMEDOUT);
 		}
@@ -527,6 +596,7 @@ int dhdpcie_init(struct pci_dev *pdev)
 	osl_t 				*osh = NULL;
 	dhd_bus_t 			*bus = NULL;
 	dhdpcie_info_t		*dhdpcie_info =  NULL;
+	wifi_adapter_info_t	*adapter = NULL;
 	DHD_ERROR(("%s enter\n", __FUNCTION__));
 	do {
 		/* osl attach */
@@ -534,6 +604,14 @@ int dhdpcie_init(struct pci_dev *pdev)
 			DHD_ERROR(("%s: osl_attach failed\n", __FUNCTION__));
 			break;
 		}
+		/* initialize static buffer */
+		adapter = dhd_wifi_platform_get_adapter(PCI_BUS, pdev->bus->number,
+			PCI_SLOT(pdev->devfn));
+		if (adapter != NULL)
+			DHD_ERROR(("%s: found adapter info '%s'\n", __FUNCTION__, adapter->name));
+		else
+			DHD_ERROR(("%s: can't find adapter info for this chip\n", __FUNCTION__));
+		osl_static_mem_init(osh, adapter);
 
 		/*  allocate linux spcific pcie structure here */
 		if (!(dhdpcie_info = MALLOC(osh, sizeof(dhdpcie_info_t)))) {
@@ -543,6 +621,7 @@ int dhdpcie_init(struct pci_dev *pdev)
 		bzero(dhdpcie_info, sizeof(dhdpcie_info_t));
 		dhdpcie_info->osh = osh;
 		dhdpcie_info->dev = pdev;
+		dhdpcie_info->adapter = adapter;
 
 		/* Find the PCI resources, verify the  */
 		/* vendor and device ID, map BAR regions and irq,  update in structures */
@@ -601,7 +680,12 @@ int dhdpcie_init(struct pci_dev *pdev)
 				break;
 			}
 		}
-
+#ifdef DHD_WAKE_STATUS
+		spin_lock_init(&dhdpcie_info->pcie_lock);
+		dhdpcie_info->wake_irq = dhd_os_get_wake_irq(bus->dhd);
+		if (dhdpcie_info->wake_irq == -1)
+			dhdpcie_info->wake_irq = pdev->irq;
+#endif
 		dhdpcie_init_succeeded = TRUE;
 
 		DHD_ERROR(("%s:Exit - SUCCESS \n", __FUNCTION__));
@@ -771,7 +855,7 @@ dhdpcie_enable_device(dhd_bus_t *bus)
 		return BCME_ERROR;
 
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 0, 0))
-	if (pci_load_saved_state(bus->dev, pch->state))
+	if (pci_load_saved_state(bus->dev, pch->default_state))
 		pci_disable_device(bus->dev);
 	else {
 #endif /* LINUX_VERSION_CODE >= KERNEL_VERSION(3, 0, 0) */
