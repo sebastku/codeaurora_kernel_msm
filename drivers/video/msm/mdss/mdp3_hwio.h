@@ -1,4 +1,4 @@
-/* Copyright (c) 2013, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2013-2014, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -117,6 +117,9 @@
 #define MDP3_REG_DMA_S_IBUF_Y_STRIDE			0xA000C
 #define MDP3_REG_DMA_S_OUT_XY				0xA0010
 
+/*DMA MASK*/
+#define MDP3_DMA_IBUF_FORMAT_MASK 0x06000000
+
 /*interface*/
 #define MDP3_REG_LCDC_EN				0xE0000
 #define MDP3_REG_LCDC_HSYNC_CTL				0xE0004
@@ -221,9 +224,13 @@
 #define MDP3_PPP_BG_UNPACK_PATTERN1	0x101D8
 #define MDP3_PPP_BG_UNPACK_PATTERN2	0x101DC
 
+#define MDP3_TFETCH_SOLID_FILL		0x20004
+#define MDP3_TFETCH_FILL_COLOR		0x20040
+
 #define MDP3_PPP_BLEND_PARAM		0x1014C
 
 #define MDP3_PPP_BLEND_BG_ALPHA_SEL	0x70010
+#define MDP3_PPP_ACTIVE BIT(0)   //QCOMM PATCH 2014-4-23, resolve MDP hung
 
 /*interrupt mask*/
 

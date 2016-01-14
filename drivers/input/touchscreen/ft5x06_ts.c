@@ -30,7 +30,7 @@
 #include <linux/firmware.h>
 #include <linux/debugfs.h>
 #include <linux/input/ft5x06_ts.h>
-
+#include <linux/proc_fs.h>      //haoweiwei add
 #if defined(CONFIG_FB)
 #include <linux/notifier.h>
 #include <linux/fb.h>
@@ -65,6 +65,7 @@
 #define FT_REG_ID		0xA3
 #define FT_REG_PMODE		0xA5
 #define FT_REG_FW_VER		0xA6
+#define FT_REG_FACT_ID		0xA8             //haoweiwei add
 #define FT_REG_POINT_RATE	0x88
 #define FT_REG_THGROUP		0x80
 #define FT_REG_ECC		0xCC
@@ -282,6 +283,87 @@ static int ft5x0x_read_reg(struct i2c_client *client, u8 addr, u8 *val)
 {
 	return ft5x06_i2c_read(client, &addr, 1, val, 1);
 }
+
+/*********************haoweiwei 20131009 start***************************/
+u8 proc_reg_value = 0 ;
+u8 proc_fact_value = 0 ;
+static int
+proc_read_val(char *page, char **start, off_t off, int count, int *eof,
+	  void *data)
+{
+	int len = 0;
+	//len += sprintf(page + len, "%s\n", "touchscreen infomation");
+	len += sprintf(page + len, "name: %s\n", "FocalTech");
+
+	len += sprintf(page + len, "i2c address: 0x%X\n", 0x3E);
+
+	len += sprintf(page + len, "IC type: %s\n", "FT62X6");
+
+    len += sprintf(page + len, "firmware: 0x%X\n", proc_reg_value);
+/**********************************************************************/
+switch (proc_fact_value){
+     
+     case 0x51:
+	 	len += sprintf(page + len, "module : %s\n", "Ofilm");
+		break ;
+	 case 0x53:
+	 	len += sprintf(page + len, "module : %s\n", "Mutto");
+		break ;
+	 case 0x54:
+	 	len += sprintf(page + len, "module : %s\n", "Eely");
+		break ;
+	 case 0x55:
+	 	len += sprintf(page + len, "module : %s\n", "Laibao");
+		break ;
+	 case 0x57:
+	 	len += sprintf(page + len, "module : %s\n", "Goworld");
+		break ;
+	 case 0x5a:
+	 	len += sprintf(page + len, "module : %s\n", "Turly");
+		break ;
+	 case 0x5f:
+	 	len += sprintf(page + len, "module : %s\n", "Success");
+		break ;
+	 case 0x60:
+	 	len += sprintf(page + len, "module : %s\n", "Lead");
+		break ;
+	case 0x65:
+	 	len += sprintf(page + len, "module : %s\n", "Xinhao");
+		break ;
+	case 0x82:
+	 	len += sprintf(page + len, "module : %s\n", "HeLT");
+		break ;
+	 case 0x85:
+	 	len += sprintf(page + len, "module : %s\n", "Junda");
+		break ;
+	 case 0x87:
+	 	len += sprintf(page + len, "module : %s\n", "LCE");
+		break ;
+	 case 0x8d:
+	 	len += sprintf(page + len, "module : %s\n", "Tianma");
+		break ;
+	case 0x9b:
+	 	len += sprintf(page + len, "module : %s\n", "Jinlong");
+		break ;
+	 default:
+	 	len += sprintf(page + len, "module : %s\n", "I don't know");
+}
+//	len += sprintf(page + len, "module : %s\n", "FocalTech FT5x06 + Goworld");
+/*********************************************************************/
+#ifdef CONFIG_SUPPORT_FTS_CTP_UPG
+{
+        //len += sprintf(page + len, "update flag : 0x%X\n", update_result_flag);
+}
+#endif
+	if (off + count >= len)
+		*eof = 1;
+	if (len < off)
+		return 0;
+	*start = page + off;
+	return ((count < len - off) ? count : len - off);
+}
+
+/**********************haoweiwei 20131009 end***************************/
 
 static void ft5x06_update_fw_ver(struct ft5x06_ts_data *data)
 {
@@ -717,7 +799,9 @@ static int ft5x06_fw_upgrade_start(struct i2c_client *client,
 
 		if (r_buf[0] != info.upgrade_id_1
 			|| r_buf[1] != info.upgrade_id_2) {
-			dev_err(&client->dev, "Upgrade ID mismatch(%d)\n", i);
+			dev_err(&client->dev, "Upgrade ID mismatch(%d), IC=0x%x 0x%x, info=0x%x 0x%x\n",
+				i, r_buf[0], r_buf[1],
+				info.upgrade_id_1, info.upgrade_id_2);
 		} else
 			break;
 	}
@@ -742,6 +826,10 @@ static int ft5x06_fw_upgrade_start(struct i2c_client *client,
 		is_5336_new_bootloader = FT_BLOADER_VERSION_GZF;
 	else
 		is_5336_new_bootloader = FT_BLOADER_VERSION_LZ4;
+
+	dev_dbg(&client->dev, "bootloader type=%d, r_buf=0x%x, family_id=0x%x\n",
+		is_5336_new_bootloader, r_buf[0], ts_data->family_id);
+	/* is_5336_new_bootloader = FT_BLOADER_VERSION_GZF; */
 
 	/* erase app and panel paramenter area */
 	w_buf[0] = FT_ERASE_APP_REG;
@@ -1371,10 +1459,11 @@ static int ft5x06_ts_probe(struct i2c_client *client,
 	struct ft5x06_ts_data *data;
 	struct input_dev *input_dev;
 	struct dentry *temp;
+	struct proc_dir_entry *refresh;      //haoweiwei add  
 	u8 reg_value;
 	u8 reg_addr;
 	int err, len;
-
+    printk("welcome to focaltech driver@@@\n");
 	if (client->dev.of_node) {
 		pdata = devm_kzalloc(&client->dev,
 			sizeof(struct ft5x06_ts_platform_data), GFP_KERNEL);
@@ -1537,7 +1626,7 @@ static int ft5x06_ts_probe(struct i2c_client *client,
 		goto free_reset_gpio;
 	}
 
-	data->family_id = reg_value;
+	data->family_id = pdata->family_id;
 
 	err = request_threaded_irq(client->irq, NULL,
 				   ft5x06_ts_interrupt, pdata->irqflags,
@@ -1625,6 +1714,39 @@ static int ft5x06_ts_probe(struct i2c_client *client,
 		dev_err(&client->dev, "threshold read failed");
 
 	dev_dbg(&client->dev, "touch threshold = %d\n", reg_value * 4);
+	
+/*******************haoweiwei 20131009 add module info start*****************/
+reg_addr = FT_REG_FACT_ID;
+	err = ft5x06_i2c_read(client, &reg_addr, 1, &reg_value, 1);
+	proc_fact_value = reg_value ;       //haoweiwei add
+	if (err < 0)
+		dev_err(&client->dev, "module read failed");
+
+	dev_info(&client->dev, "Module information = 0x%x\n", reg_value);
+/*******************haoweiwei 20131009 add module info end*****************/
+
+	reg_addr = FT_REG_FW_VER;
+	err = ft5x06_i2c_read(client, &reg_addr, 1, &reg_value, 1);
+	proc_reg_value = reg_value ;       //haoweiwei add
+	if (err < 0)
+		dev_err(&client->dev, "version read failed");
+
+	dev_info(&client->dev, "Firmware version = 0x%x\n", reg_value);
+
+	//FT_STORE_TS_INFO(data->ts_info, data->family_id, reg_value);
+
+/*******************haoweiwei 20131009 add ts info start*****************/
+       refresh = create_proc_entry("driver/ts_information", 0644, NULL);
+	if (refresh) {
+		refresh->data		= NULL;
+		refresh->read_proc  = proc_read_val;
+		//refresh->write_proc = proc_write_val;
+		printk("haoweiwei creat file node success ###\n");
+	}
+	else{
+		printk("haoweiwei creat file node failed $$$\n");
+		}
+/*******************haoweiwei 20131009 add ts info end******************/
 
 	ft5x06_update_fw_ver(data);
 

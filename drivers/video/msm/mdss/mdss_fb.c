@@ -297,6 +297,9 @@ static void mdss_fb_shutdown(struct platform_device *pdev)
 {
 	struct msm_fb_data_type *mfd = platform_get_drvdata(pdev);
 
+    mdss_fb_set_backlight(mfd, 0);
+    //   
+    
 	mfd->shutdown_pending = true;
 	lock_fb_info(mfd->fbi);
 	mdss_fb_release_all(mfd->fbi, true);
@@ -630,6 +633,9 @@ static void mdss_fb_scale_bl(struct msm_fb_data_type *mfd, u32 *bl_lvl)
 	(*bl_lvl) = temp;
 }
 
+static int first_setBacklight = 0;
+//END
+
 /* must call this function from within mfd->bl_lock */
 void mdss_fb_set_backlight(struct msm_fb_data_type *mfd, u32 bkl_lvl)
 {
@@ -674,6 +680,9 @@ void mdss_fb_set_backlight(struct msm_fb_data_type *mfd, u32 bkl_lvl)
 			mutex_lock(&mfd->bl_lock);
 		}
 	}
+   if(!first_setBacklight)
+	  first_setBacklight = 1;
+//END
 }
 
 void mdss_fb_update_backlight(struct msm_fb_data_type *mfd)
@@ -685,6 +694,7 @@ void mdss_fb_update_backlight(struct msm_fb_data_type *mfd)
 		if ((pdata) && (pdata->set_backlight)) {
 			mutex_lock(&mfd->bl_lock);
 			mfd->bl_level = mfd->unset_bl_level;
+			msleep(100); // zhoufan add for white 20131202
 			pdata->set_backlight(pdata, mfd->bl_level);
 			mfd->bl_level_old = mfd->unset_bl_level;
 			mutex_unlock(&mfd->bl_lock);
@@ -693,11 +703,32 @@ void mdss_fb_update_backlight(struct msm_fb_data_type *mfd)
 	}
 }
 
+struct mdss_panel_data *g_pdata;
+extern void mdss_dsi_panel_bl_ctrl_direct(struct mdss_panel_data *pdata,u32 bl_level);
+struct workqueue_struct *backlight_work_queue = NULL; 
+static void backlight_recovery(struct work_struct *work);
+static DECLARE_WORK(backlight_recovery_work, backlight_recovery); 
+static int mdss_fb_clear_splash_flag = 0;
+static void backlight_recovery(struct work_struct *work)
+{
+     mdelay(50);
+	if (!mdss_fb_clear_splash_flag)
+	{
+	 mdss_dsi_panel_bl_ctrl_direct(g_pdata, 1000);
+}
+}
+//END
+
 static int mdss_fb_blank_sub(int blank_mode, struct fb_info *info,
 			     int op_enable)
 {
 	struct msm_fb_data_type *mfd = (struct msm_fb_data_type *)info->par;
 	int ret = 0;
+
+	struct mdss_panel_data *pdata;
+	pdata = dev_get_platdata(&mfd->pdev->dev);
+	g_pdata = pdata;
+//END
 
 	if (!op_enable)
 		return -EPERM;
@@ -709,10 +740,19 @@ static int mdss_fb_blank_sub(int blank_mode, struct fb_info *info,
 	case FB_BLANK_UNBLANK:
 		if (!mfd->panel_power_on && mfd->mdp.on_fnc) {
 			ret = mfd->mdp.on_fnc(mfd);
-			if (ret == 0)
+			if (ret == 0) {
 				mfd->panel_power_on = true;
+				mfd->panel_info->panel_dead = false;
+			}
 			mutex_lock(&mfd->update.lock);
 			mfd->update.type = NOTIFY_TYPE_UPDATE;
+			
+			if(!first_setBacklight)
+			{
+			     g_pdata = pdata;
+				 queue_work(backlight_work_queue, &backlight_recovery_work);
+			}
+//END			
 			mutex_unlock(&mfd->update.lock);
 		}
 		break;
@@ -722,6 +762,11 @@ static int mdss_fb_blank_sub(int blank_mode, struct fb_info *info,
 	case FB_BLANK_NORMAL:
 	case FB_BLANK_POWERDOWN:
 	default:
+      if(!first_setBacklight)
+      {
+		mdss_dsi_panel_bl_ctrl_direct(pdata,0);
+      }
+//END		
 		if (mfd->panel_power_on && mfd->mdp.off_fnc) {
 			int curr_pwr_state;
 
@@ -1120,6 +1165,12 @@ static int mdss_fb_register(struct msm_fb_data_type *mfd)
 		return -EPERM;
 	}
 
+	backlight_work_queue = create_singlethread_workqueue("backlight");	
+	if (backlight_work_queue == NULL) {	    
+		printk(KERN_ERR "msm_fb_probe: fail to creat backlight_work_queue.\n");	 //   goto err_suspend_work_queue;	
+	}	
+//END
+
 	pr_info("FrameBuffer[%d] %dx%d size=%d registered successfully!\n",
 		     mfd->index, fbi->var.xres, fbi->var.yres,
 		     fbi->fix.smem_len);
@@ -1209,9 +1260,12 @@ static int mdss_fb_release_all(struct fb_info *info, bool release_all)
 	struct mdss_fb_proc_info *pinfo = NULL, *temp_pinfo = NULL;
 	int ret = 0;
 	int pid = current->tgid;
+	bool unknown_pid = true, release_needed = false;
+	struct task_struct *task = current->group_leader;
 
 	if (!mfd->ref_cnt) {
-		pr_info("try to close unopened fb %d!\n", mfd->index);
+		pr_info("try to close unopened fb %d! from %s\n", mfd->index,
+			task->comm);
 		return -EINVAL;
 	}
 
@@ -1223,12 +1277,15 @@ static int mdss_fb_release_all(struct fb_info *info, bool release_all)
 		if (!release_all && (pinfo->pid != pid))
 			continue;
 
-		pr_debug("found process entry pid=%d ref=%d\n", pinfo->pid,
-			pinfo->ref_cnt);
+		unknown_pid = false;
+
+		pr_debug("found process %s pid=%d mfd->ref=%d pinfo->ref=%d\n",
+			task->comm, mfd->ref_cnt, pinfo->pid, pinfo->ref_cnt);
 
 		do {
 			if (mfd->ref_cnt < pinfo->ref_cnt)
-				pr_warn("WARN:mfd->ref_cnt < pinfo->ref_cnt\n");
+				pr_warn("WARN:mfd->ref=%d < pinfo->ref=%d\n",
+					mfd->ref_cnt, pinfo->ref_cnt);
 			else
 				mfd->ref_cnt--;
 
@@ -1242,14 +1299,37 @@ static int mdss_fb_release_all(struct fb_info *info, bool release_all)
 		}
 
 		if (pinfo->ref_cnt == 0) {
-			if (mfd->mdp.release_fnc) {
-				ret = mfd->mdp.release_fnc(mfd);
-				if (ret)
-					pr_err("error releasing fb%d pid=%d\n",
-						mfd->index, pinfo->pid);
-			}
 			list_del(&pinfo->list);
 			kfree(pinfo);
+			release_needed = !release_all;
+		}
+
+		if (!release_all)
+			break;
+	}
+
+	if (release_needed) {
+		pr_debug("known process %s pid=%d mfd->ref=%d\n",
+			task->comm, pid, mfd->ref_cnt);
+
+		if (mfd->mdp.release_fnc) {
+			ret = mfd->mdp.release_fnc(mfd, false);
+			if (ret)
+				pr_err("error releasing fb%d pid=%d\n",
+					mfd->index, pid);
+		}
+	} else if (unknown_pid || release_all) {
+		pr_warn("unknown process %s pid=%d mfd->ref=%d\n",
+			task->comm, pid, mfd->ref_cnt);
+
+		if (mfd->ref_cnt)
+			mfd->ref_cnt--;
+
+		if (mfd->mdp.release_fnc) {
+			ret = mfd->mdp.release_fnc(mfd, true);
+			if (ret)
+				pr_err("error fb%d release process %s pid=%d\n",
+					mfd->index, task->comm, pid);
 		}
 	}
 
@@ -1262,8 +1342,8 @@ static int mdss_fb_release_all(struct fb_info *info, bool release_all)
 		ret = mdss_fb_blank_sub(FB_BLANK_POWERDOWN, info,
 			mfd->op_enable);
 		if (ret) {
-			pr_err("can't turn off fb%d! rc=%d\n",
-				mfd->index, ret);
+			pr_err("can't turn off fb%d! rc=%d process %s pid=%d\n",
+				mfd->index, ret, task->comm, pid);
 			return ret;
 		}
 	}
@@ -2026,6 +2106,19 @@ static int mdss_fb_display_commit(struct fb_info *info,
 	return ret;
 }
 
+static int mdss_fb_clear_splash(struct fb_info *info,
+						unsigned long *argp)
+{
+	struct msm_fb_data_type *mfd = (struct msm_fb_data_type *)info->par;
+	int ret = 0;
+
+	struct mdss_panel_data *pdata;
+	pdata = dev_get_platdata(&mfd->pdev->dev);
+	mdss_dsi_panel_bl_ctrl_direct(pdata, 0);
+	mdss_fb_clear_splash_flag = 1;
+	return ret;
+}
+//////
 
 static int mdss_fb_ioctl(struct fb_info *info, unsigned int cmd,
 			 unsigned long arg)
@@ -2094,6 +2187,12 @@ static int mdss_fb_ioctl(struct fb_info *info, unsigned int cmd,
 		ret = mdss_fb_display_commit(info, argp);
 		break;
 
+	
+	case MSMFB_CLEAR_SPLASH:
+		ret = mdss_fb_clear_splash(info, argp);
+		break;
+
+	
 	default:
 		if (mfd->mdp.ioctl_handler)
 			ret = mfd->mdp.ioctl_handler(mfd, cmd, argp);

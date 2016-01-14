@@ -36,7 +36,6 @@
 #define SMEM_IMAGE_VERSION_SINGLE_BLOCK_SIZE 128
 #define SMEM_IMAGE_VERSION_SIZE 4096
 #define SMEM_IMAGE_VERSION_NAME_SIZE 75
-#define SMEM_IMAGE_VERSION_NAME_OFFSET 3
 #define SMEM_IMAGE_VERSION_VARIANT_SIZE 20
 #define SMEM_IMAGE_VERSION_VARIANT_OFFSET 75
 #define SMEM_IMAGE_VERSION_OEM_SIZE 32
@@ -429,7 +428,15 @@ static enum msm_cpu cpu_of_id[] = {
 	   MSM_CPU_UNKNOWN is set to 0 to ensure these IDs are
 	   considered as unknown CPU. */
 };
+int panel_id_from_lk;
 
+static int __init panel_num_setup(char *str)
+{
+	int cal = simple_strtol(str, NULL, 0);
+	panel_id_from_lk = cal;
+	return 1;
+}
+__setup("panel=", panel_num_setup);
 static enum msm_cpu cur_cpu;
 static int current_image;
 
@@ -859,8 +866,7 @@ msm_get_image_version(struct device *dev,
 		return snprintf(buf, SMEM_IMAGE_VERSION_NAME_SIZE, "Unknown");
 	}
 	string_address += current_image * SMEM_IMAGE_VERSION_SINGLE_BLOCK_SIZE;
-	string_address += SMEM_IMAGE_VERSION_NAME_OFFSET;
-	return snprintf(buf, SMEM_IMAGE_VERSION_NAME_SIZE, "%-.72s\n",
+	return snprintf(buf, SMEM_IMAGE_VERSION_NAME_SIZE, "%-.75s\n",
 			string_address);
 }
 

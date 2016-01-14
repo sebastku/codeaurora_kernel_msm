@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2013, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2012-2014, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -187,6 +187,7 @@ struct fastrpc_mmap {
 	struct hlist_node hn;
 	struct ion_handle *handle;
 	void *virt;
+	ion_phys_addr_t phys;
 	uint32_t vaddrin;
 	uint32_t vaddrout;
 	int size;
@@ -229,6 +230,11 @@ static void free_map(struct fastrpc_mmap *map)
 {
 	struct fastrpc_apps *me = &gfa;
 	if (!IS_ERR_OR_NULL(map->handle)) {
+		if (me->smmu.enabled && map->phys) {
+			ion_unmap_iommu(me->iclient, map->handle,
+					me->smmu.domain_id, 0);
+			map->phys = 0;
+		}
 		if (!IS_ERR_OR_NULL(map->virt)) {
 			ion_unmap_kernel(me->iclient, map->handle);
 			map->virt = 0;
@@ -558,10 +564,7 @@ static int get_args(uint32_t kernel, uint32_t sc, remote_arg_t *pra,
 		rpra[i].buf.len = pra[i].buf.len;
 		if (!rpra[i].buf.len)
 			continue;
-		if (list[i].num) {
-			rpra[i].buf.pv = pra[i].buf.pv;
-			continue;
-		} else if (me->smmu.enabled && fds && (fds[i] >= 0)) {
+		if (me->smmu.enabled && fds && (fds[i] >= 0)) {
 			len = buf_page_size(pra[i].buf.len);
 			handles[i] = ion_import_dma_buf(me->iclient, fds[i]);
 			VERIFY(err, 0 == IS_ERR_OR_NULL(handles[i]));
@@ -576,6 +579,9 @@ static int get_args(uint32_t kernel, uint32_t sc, remote_arg_t *pra,
 			list[i].num = 1;
 			pages[list[i].pgidx].addr = iova;
 			pages[list[i].pgidx].size = len;
+			continue;
+		} else if (list[i].num) {
+			rpra[i].buf.pv = pra[i].buf.pv;
 			continue;
 		}
 		if (rlen < pra[i].buf.len) {
@@ -1138,7 +1144,7 @@ static int fastrpc_internal_mmap(struct fastrpc_apps *me,
 	struct fastrpc_mmap *map = 0;
 	struct smq_phy_page *pages = 0;
 	void *buf;
-	int len;
+	unsigned long len;
 	int num;
 	int err = 0;
 
@@ -1159,9 +1165,22 @@ static int fastrpc_internal_mmap(struct fastrpc_apps *me,
 	VERIFY(err, 0 != (pages = kzalloc(num * sizeof(*pages), GFP_KERNEL)));
 	if (err)
 		goto bail;
-	VERIFY(err, 0 < (num = buf_get_pages(buf, len, num, 1, pages, num)));
-	if (err)
-		goto bail;
+
+	if (me->smmu.enabled) {
+		VERIFY(err, 0 == ion_map_iommu(clnt, map->handle,
+				me->smmu.domain_id, 0,
+				SZ_4K, 0, &map->phys, &len, 0, 0));
+		if (err)
+			goto bail;
+		pages->addr = map->phys;
+		pages->size = len;
+		num = 1;
+	} else {
+		VERIFY(err, 0 < (num = buf_get_pages(buf, len, num, 1,
+							pages, num)));
+		if (err)
+			goto bail;
+	}
 
 	VERIFY(err, 0 == fastrpc_mmap_on_dsp(me, mmap, pages, num));
 	if (err)
@@ -1392,7 +1411,7 @@ static int __init fastrpc_device_init(void)
 	VERIFY(err, 0 == cdev_add(&me->cdev, MKDEV(MAJOR(me->dev_no), 0), 1));
 	if (err)
 		goto cdev_init_bail;
-	me->class = class_create(THIS_MODULE, "chardrv");
+	me->class = class_create(THIS_MODULE, "fastrpc");
 	VERIFY(err, !IS_ERR(me->class));
 	if (err)
 		goto class_create_bail;
