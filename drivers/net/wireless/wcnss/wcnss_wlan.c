@@ -35,6 +35,7 @@
 #include <linux/rwsem.h>
 #include <linux/mfd/pm8xxx/misc.h>
 #include <linux/qpnp/qpnp-adc.h>
+#include <linux/proc_fs.h> //ZTE_MODIFY wanghaifei for wifi and bt product 2013-12-10
 
 #include <mach/msm_smd.h>
 #include <mach/msm_iomap.h>
@@ -50,7 +51,6 @@
 
 /* module params */
 #define WCNSS_CONFIG_UNSPECIFIED (-1)
-#define UINT32_MAX (0xFFFFFFFFU)
 
 static int has_48mhz_xo = WCNSS_CONFIG_UNSPECIFIED;
 module_param(has_48mhz_xo, int, S_IWUSR | S_IRUGO);
@@ -143,8 +143,12 @@ static DEFINE_SPINLOCK(reg_spinlock);
 #define MSM_PRONTO_PLL_BASE				0xfb21b1c0
 #define PRONTO_PLL_STATUS_OFFSET		0x1c
 
+#define MSM_PRONTO_TXP_STATUS           0xfb08040c
 #define MSM_PRONTO_TXP_PHY_ABORT        0xfb080488
 #define MSM_PRONTO_BRDG_ERR_SRC         0xfb080fb0
+
+#define MSM_PRONTO_ALARMS_TXCTL         0xfb0120a8
+#define MSM_PRONTO_ALARMS_TACTL         0xfb012448
 
 #define WCNSS_DEF_WLAN_RX_BUFF_COUNT		1024
 #define WCNSS_VBATT_THRESHOLD		3500000
@@ -155,6 +159,7 @@ static DEFINE_SPINLOCK(reg_spinlock);
 #define WCNSS_CTRL_CHANNEL			"WCNSS_CTRL"
 #define WCNSS_MAX_FRAME_SIZE		(4*1024)
 #define WCNSS_VERSION_LEN			30
+#define WCNSS_MAX_BUILD_VER_LEN		256
 
 /* message types */
 #define WCNSS_CTRL_MSG_START	0x01000000
@@ -167,6 +172,8 @@ static DEFINE_SPINLOCK(reg_spinlock);
 #define	WCNSS_CALDATA_DNLD_REQ        (WCNSS_CTRL_MSG_START + 6)
 #define	WCNSS_CALDATA_DNLD_RSP        (WCNSS_CTRL_MSG_START + 7)
 #define	WCNSS_VBATT_LEVEL_IND         (WCNSS_CTRL_MSG_START + 8)
+#define	WCNSS_BUILD_VER_REQ           (WCNSS_CTRL_MSG_START + 9)
+#define	WCNSS_BUILD_VER_RSP           (WCNSS_CTRL_MSG_START + 10)
 
 
 #define VALID_VERSION(version) \
@@ -340,10 +347,12 @@ static struct {
 	void __iomem *pronto_ccpu_base;
 	void __iomem *pronto_saw2_base;
 	void __iomem *pronto_pll_base;
+	void __iomem *wlan_tx_status;
 	void __iomem *wlan_tx_phy_aborts;
 	void __iomem *wlan_brdg_err_source;
+	void __iomem *alarms_txctl;
+	void __iomem *alarms_tactl;
 	void __iomem *fiq_reg;
-	int	ssr_boot;
 	int	nv_downloaded;
 	unsigned char *fw_cal_data;
 	unsigned char *user_cal_data;
@@ -352,7 +361,7 @@ static struct {
 	int	fw_cal_available;
 	int	user_cal_read;
 	int	user_cal_available;
-	u32	user_cal_rcvd;
+	int	user_cal_rcvd;
 	int	user_cal_exp_size;
 	int	device_opened;
 	int	iris_xo_mode_set;
@@ -516,6 +525,10 @@ void wcnss_pronto_log_debug_regs(void)
 	pr_info_ratelimited("%s:  PRONTO_PMU_SOFT_RESET %08x\n",
 						__func__, reg);
 
+	reg_addr = penv->pronto_saw2_base + PRONTO_SAW2_SPM_STS_OFFSET;
+	reg = readl_relaxed(reg_addr);
+	pr_info_ratelimited("%s: PRONTO_SAW2_SPM_STS %08x\n", __func__, reg);
+
 	reg_addr = penv->msm_wcnss_base + PRONTO_PMU_COM_GDSCR_OFFSET;
 	reg = readl_relaxed(reg_addr);
 	pr_info_ratelimited("%s:  PRONTO_PMU_COM_GDSCR %08x\n",
@@ -563,10 +576,6 @@ void wcnss_pronto_log_debug_regs(void)
 	reg_addr = penv->pronto_ccpu_base + CCU_PRONTO_LAST_ADDR2_OFFSET;
 	reg = readl_relaxed(reg_addr);
 	pr_info_ratelimited("%s: CCU_CCPU_LAST_ADDR2 %08x\n", __func__, reg);
-
-	reg_addr = penv->pronto_saw2_base + PRONTO_SAW2_SPM_STS_OFFSET;
-	reg = readl_relaxed(reg_addr);
-	pr_info_ratelimited("%s: PRONTO_SAW2_SPM_STS %08x\n", __func__, reg);
 
 	reg_addr = penv->pronto_pll_base + PRONTO_PLL_STATUS_OFFSET;
 	reg = readl_relaxed(reg_addr);
@@ -665,6 +674,14 @@ void wcnss_pronto_log_debug_regs(void)
 	reg = readl_relaxed(penv->wlan_brdg_err_source);
 	pr_info_ratelimited("%s: WLAN_BRDG_ERR_SOURCE %08x\n", __func__, reg);
 
+	reg = readl_relaxed(penv->wlan_tx_status);
+	pr_info_ratelimited("%s: WLAN_TX_STATUS %08x\n", __func__, reg);
+
+	reg = readl_relaxed(penv->alarms_txctl);
+	pr_err("ALARMS_TXCTL %08x\n", reg);
+
+	reg = readl_relaxed(penv->alarms_tactl);
+	pr_err("ALARMS_TACTL %08x\n", reg);
 }
 EXPORT_SYMBOL(wcnss_pronto_log_debug_regs);
 
@@ -756,8 +773,6 @@ static void wcnss_smd_notify_event(void *data, unsigned int event)
 	case SMD_EVENT_CLOSE:
 		pr_debug("wcnss: closing WCNSS SMD channel :%s",
 				WCNSS_CTRL_CHANNEL);
-		/* This SMD is closed only during SSR */
-		penv->ssr_boot = true;
 		penv->nv_downloaded = 0;
 		break;
 
@@ -1349,6 +1364,17 @@ void extract_cal_data(int len)
 		goto exit;
 	}
 
+	if (penv->fw_cal_available) {
+		/* ignore cal upload from SSR */
+		smd_read(penv->smd_ch, NULL, calhdr.frag_size);
+		penv->fw_cal_exp_frag++;
+		if (calhdr.msg_flags & LAST_FRAGMENT) {
+			penv->fw_cal_exp_frag = 0;
+			goto exit;
+		}
+		return;
+	}
+
 	if (0 == calhdr.frag_number) {
 		if (calhdr.total_size > MAX_CALIBRATED_DATA_SIZE) {
 			pr_err("wcnss: Invalid cal data size %d",
@@ -1412,7 +1438,9 @@ static void wcnssctrl_rx_handler(struct work_struct *worker)
 	int len = 0;
 	int rc = 0;
 	unsigned char buf[sizeof(struct wcnss_version)];
+	unsigned char build[WCNSS_MAX_BUILD_VER_LEN+1];
 	struct smd_msg_hdr *phdr;
+	struct smd_msg_hdr smd_msg;
 	struct wcnss_version *pversion;
 	int hw_type;
 	unsigned char fw_status = 0;
@@ -1469,6 +1497,12 @@ static void wcnssctrl_rx_handler(struct work_struct *worker)
 			break;
 
 		case WCNSS_PRONTO_HW:
+			smd_msg.msg_type = WCNSS_BUILD_VER_REQ;
+			smd_msg.msg_len = sizeof(smd_msg);
+			rc = wcnss_smd_tx(&smd_msg, smd_msg.msg_len);
+			if (rc < 0)
+				pr_err("wcnss: smd tx failed: %s\n", __func__);
+
 			/* supported only if pronto major >= 1 and minor >= 4 */
 			if ((pversion->major >= 1) && (pversion->minor >= 4)) {
 				pr_info("wcnss: schedule dnld work for pronto\n");
@@ -1481,6 +1515,21 @@ static void wcnssctrl_rx_handler(struct work_struct *worker)
 				hw_type);
 			break;
 		}
+		break;
+
+	case WCNSS_BUILD_VER_RSP:
+		if (len > WCNSS_MAX_BUILD_VER_LEN) {
+			pr_err("wcnss: invalid build version data from wcnss %d\n",
+					len);
+			return;
+		}
+		rc = smd_read(penv->smd_ch, build, len);
+		if (rc < len) {
+			pr_err("wcnss: incomplete data read from smd\n");
+			return;
+		}
+		build[len] = 0;
+		pr_info("wcnss: build version %s\n", build);
 		break;
 
 	case WCNSS_NVBIN_DNLD_RSP:
@@ -1499,7 +1548,6 @@ static void wcnssctrl_rx_handler(struct work_struct *worker)
 		break;
 
 	case WCNSS_CALDATA_UPLD_REQ:
-		penv->fw_cal_available = 0;
 		extract_cal_data(len);
 		break;
 
@@ -1749,21 +1797,12 @@ static void wcnss_nvbin_dnld_main(struct work_struct *worker)
 		while (!penv->user_cal_available && retry++ < 5)
 			msleep(500);
 	}
-
-	/* only cal data is sent during ssr (if available) */
-	if (penv->fw_cal_available && penv->ssr_boot) {
-		pr_info_ratelimited("wcnss: cal download during SSR, using fw cal");
-		wcnss_caldata_dnld(penv->fw_cal_data, penv->fw_cal_rcvd, false);
-		return;
-
-	} else if (penv->user_cal_available && penv->ssr_boot) {
-		pr_info_ratelimited("wcnss: cal download during SSR, using user cal");
-		wcnss_caldata_dnld(penv->user_cal_data,
-		penv->user_cal_rcvd, false);
-		return;
+	if (penv->fw_cal_available) {
+		pr_info_ratelimited("wcnss: cal download, using fw cal");
+		wcnss_caldata_dnld(penv->fw_cal_data, penv->fw_cal_rcvd, true);
 
 	} else if (penv->user_cal_available) {
-		pr_info_ratelimited("wcnss: cal download during cold boot, using user cal");
+		pr_info_ratelimited("wcnss: cal download, using user cal");
 		wcnss_caldata_dnld(penv->user_cal_data,
 		penv->user_cal_rcvd, true);
 	}
@@ -1966,7 +2005,24 @@ wcnss_trigger_config(struct platform_device *pdev)
 			pr_err("%s: ioremap wlan BRDG ERR failed\n", __func__);
 			goto fail_ioremap8;
 		}
-
+		penv->wlan_tx_status = ioremap(MSM_PRONTO_TXP_STATUS, SZ_8);
+		if (!penv->wlan_tx_status) {
+			ret = -ENOMEM;
+			pr_err("%s: ioremap wlan TX STATUS failed\n", __func__);
+			goto fail_ioremap9;
+		}
+		penv->alarms_txctl = ioremap(MSM_PRONTO_ALARMS_TXCTL, SZ_8);
+		if (!penv->alarms_txctl) {
+			ret = -ENOMEM;
+			pr_err("%s: ioremap alarms TXCTL failed\n", __func__);
+			goto fail_ioremap10;
+		}
+		penv->alarms_tactl = ioremap(MSM_PRONTO_ALARMS_TACTL, SZ_8);
+		if (!penv->alarms_tactl) {
+			ret = -ENOMEM;
+			pr_err("%s: ioremap alarms TACTL failed\n", __func__);
+			goto fail_ioremap11;
+		}
 	}
 	penv->adc_tm_dev = qpnp_get_adc_tm(&penv->pdev->dev, "wcnss");
 	if (IS_ERR(penv->adc_tm_dev)) {
@@ -1992,6 +2048,15 @@ wcnss_trigger_config(struct platform_device *pdev)
 fail_pil:
 	if (penv->riva_ccu_base)
 		iounmap(penv->riva_ccu_base);
+	if (penv->alarms_tactl)
+		iounmap(penv->alarms_tactl);
+fail_ioremap11:
+	if (penv->alarms_txctl)
+		iounmap(penv->alarms_txctl);
+fail_ioremap10:
+	if (penv->wlan_tx_status)
+		iounmap(penv->wlan_tx_status);
+fail_ioremap9:
 	if (penv->wlan_brdg_err_source)
 		iounmap(penv->wlan_brdg_err_source);
 fail_ioremap8:
@@ -2101,7 +2166,7 @@ static ssize_t wcnss_wlan_write(struct file *fp, const char __user
 			*user_buffer, size_t count, loff_t *position)
 {
 	int rc = 0;
-	size_t size = 0;
+	int size = 0;
 
 	if (!penv || !penv->device_opened || penv->user_cal_available)
 		return -EFAULT;
@@ -2109,7 +2174,7 @@ static ssize_t wcnss_wlan_write(struct file *fp, const char __user
 	if (penv->user_cal_rcvd == 0 && count >= 4
 			&& !penv->user_cal_data) {
 		rc = copy_from_user((void *)&size, user_buffer, 4);
-		if (!size || size > MAX_CALIBRATED_DATA_SIZE) {
+		if (size > MAX_CALIBRATED_DATA_SIZE) {
 			pr_err(DEVICE " invalid size to write %d\n", size);
 			return -EFAULT;
 		}
@@ -2128,8 +2193,7 @@ static ssize_t wcnss_wlan_write(struct file *fp, const char __user
 	} else if (penv->user_cal_rcvd == 0 && count < 4)
 		return -EFAULT;
 
-	if ((UINT32_MAX - count < penv->user_cal_rcvd) ||
-	     MAX_CALIBRATED_DATA_SIZE < count + penv->user_cal_rcvd) {
+	if (MAX_CALIBRATED_DATA_SIZE < count + penv->user_cal_rcvd) {
 		pr_err(DEVICE " invalid size to write %d\n", count +
 				penv->user_cal_rcvd);
 		rc = -ENOMEM;
@@ -2215,6 +2279,57 @@ wcnss_wlan_remove(struct platform_device *pdev)
 	return 0;
 }
 
+// ZTE_MODIFY wanghaifei for wifi and bt product 2013-12-10 begin
+static char wlan_info[51] = "Device manufacturing:Qualcomm Model Number:WCN3620";
+static ssize_t wlan_info_read_proc(char *page, char **start, off_t off,
+                                int count, int *eof, void *data)
+{
+        //int len = strlen(wlan_info);
+        return sprintf(page, "%s\n", wlan_info);
+        //return len + 1;
+}
+
+static char bt_id[55] = "BT_Info = BT Information:Qualcomm Model Number:WCN3620";
+static ssize_t bt_id_read_proc(char *page, char **start, off_t off,
+                                int count, int *eof, void *data)
+{
+        //int len = strlen(bt_id);
+        return sprintf(page, "%s\n", bt_id);
+        //return len + 1;
+}
+
+static struct proc_dir_entry *wlan_info_proc_file;
+static struct proc_dir_entry *bt_id_proc_file;
+static void create_wlan_info_proc_file(void)
+{
+  wlan_info_proc_file = create_proc_entry("driver/wlan_info", 0644, NULL);
+  printk("goes to create_wlan_info_proc_file\n");
+  if (wlan_info_proc_file) {
+                        wlan_info_proc_file->read_proc = wlan_info_read_proc;
+   } else
+        printk(KERN_INFO "proc file create failed!\n");
+
+  bt_id_proc_file = create_proc_entry("driver/bt_id", 0644, NULL);
+ // printk("goes to create_wlan_info_proc_file\n");
+  if (bt_id_proc_file) {
+                        bt_id_proc_file->read_proc = bt_id_read_proc;
+   } else
+        printk(KERN_INFO "proc file create failed!\n");
+}
+
+static void remove_wlan_info_proc_file(void)
+{
+        printk("goes to remove_wlan_info_proc_file\n");
+        if(wlan_info_proc_file){
+                remove_proc_entry("driver/wlan_info", NULL);
+                wlan_info_proc_file = NULL;
+        }
+        if(bt_id_proc_file){
+                remove_proc_entry("driver/bt_id", NULL);
+                bt_id_proc_file = NULL;
+        }
+}
+// ZTE_MODIFY wanghaifei 2013-12-10 end
 
 static const struct dev_pm_ops wcnss_wlan_pm_ops = {
 	.suspend	= wcnss_wlan_suspend,
@@ -2254,12 +2369,19 @@ static int __init wcnss_wlan_init(void)
 	if (ret < 0)
 		pr_err("wcnss: pre-allocation failed\n");
 #endif
+// ZTE_MODIFY wanghaifei for wifi and bt product 2013-12-10 begin
+        create_wlan_info_proc_file();
+// ZTE_MODIFY wanghaifei 2013-12-10 end
 
 	return ret;
 }
 
 static void __exit wcnss_wlan_exit(void)
 {
+// ZTE_MODIFY wanghaifei for wifi and bt product 2013-12-10 begin
+        remove_wlan_info_proc_file();
+// ZTE_MODIFY wanghaifei 2013-12-10 end
+
 	if (penv) {
 		if (penv->pil)
 			subsystem_put(penv->pil);

@@ -239,7 +239,7 @@
 		qcom,hsusb-otg-otg-control = <2>;
 		qcom,hsusb-otg-disable-reset;
 		qcom,dp-manual-pullup;
-		qcom,ahb-async-bridge-bypass;
+		qcom,disable-retention-with-vdd-min;
 
 		qcom,msm-bus,name = "usb2";
 		qcom,msm-bus,num-cases = <2>;
@@ -286,6 +286,8 @@
 		interrupt-names = "core_irq", "bam_irq";
 
 		vdd-supply = <&pm8110_l17>;
+		qcom,vdd-always-on;  /* ZTE_MODIFY */
+		qcom,vdd-lpm-sup; /* ZTE_MODIFY */
 		qcom,vdd-voltage-level = <2900000 2900000>;
 		qcom,vdd-current-level = <9000 400000>;
 
@@ -442,7 +444,6 @@
 		compatible = "qcom,rpm-smd";
 		rpm-channel-name = "rpm_requests";
 		rpm-channel-type = <15>; /* SMD_APPS_RPM */
-		rpm-standalone;
 	};
 
 	qcom,bcl {
@@ -530,6 +531,23 @@
                 qcom,master-id = <86>;
 	};
 
+
+	i2c@f9924000 { /* BLSP-1 QUP-3 */
+		cell-index = <2>;
+		compatible = "qcom,i2c-qup";
+		#address-cells = <1>;
+		#size-cells = <0>;
+		reg-names = "qup_phys_addr";
+		reg = <0xf9924000 0x1000>;
+		interrupt-names = "qup_err_intr";
+		interrupts = <0 96 0>;
+		qcom,i2c-bus-freq = <100000>;
+		qcom,i2c-src-freq = <19200000>;
+		qcom,sda-gpio = <&msmgpio 8 0>;
+		qcom,scl-gpio = <&msmgpio 9 0>;
+		qcom,master-id = <86>;
+	};
+
 	i2c@f9925000 { /* BLSP-1 QUP-3 */
 		cell-index = <0>;
 		compatible = "qcom,i2c-qup";
@@ -541,8 +559,10 @@
 		interrupts = <0 97 0>;
 		qcom,i2c-bus-freq = <100000>;
                 qcom,i2c-src-freq = <19200000>;
+                /* ZTE_MODIFY for Sensor
                 qcom,sda-gpio = <&msmgpio 10 0>;
                 qcom,scl-gpio = <&msmgpio 11 0>;
+                */
                 qcom,master-id = <86>;
 	};
 
@@ -873,8 +893,8 @@
                 qcom,msm-bus,num-cases = <2>;
                 qcom,msm-bus,num-paths = <1>;
                 qcom,msm-bus,vectors-KBps =
-                                <1 618 0 0>,
-                                <1 618 0 800>;
+                                <54 618 0 0>,
+                                <54 618 0 800>;
         };
 
 	qcom,msm-rtb {

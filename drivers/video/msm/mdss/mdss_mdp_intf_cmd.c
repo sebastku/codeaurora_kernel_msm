@@ -510,13 +510,13 @@ int mdss_mdp_cmd_kickoff(struct mdss_mdp_ctl *ctl, void *arg)
 
 	mdss_mdp_cmd_set_partial_roi(ctl);
 
+	mdss_mdp_cmd_clk_on(ctx);
+
 	/*
 	 * tx dcs command if had any
 	 */
 	mdss_mdp_ctl_intf_event(ctl, MDSS_EVENT_DSI_CMDLIST_KOFF,
 						(void *)&ctx->recovery);
-
-	mdss_mdp_cmd_clk_on(ctx);
 
 	INIT_COMPLETION(ctx->pp_comp);
 	mdss_mdp_irq_enable(MDSS_MDP_IRQ_PING_PONG_COMP, ctx->pp_num);
@@ -532,6 +532,7 @@ int mdss_mdp_cmd_kickoff(struct mdss_mdp_ctl *ctl, void *arg)
 int mdss_mdp_cmd_stop(struct mdss_mdp_ctl *ctl)
 {
 	struct mdss_mdp_cmd_ctx *ctx;
+	struct mdss_panel_info *pinfo;
 	unsigned long flags;
 	struct mdss_mdp_vsync_handler *tmp, *handle;
 	int need_wait = 0;
@@ -555,8 +556,22 @@ int mdss_mdp_cmd_stop(struct mdss_mdp_ctl *ctl)
 
 	if (need_wait)
 		if (wait_for_completion_timeout(&ctx->stop_comp, STOP_TIMEOUT)
-		    <= 0)
+		    <= 0) {
 			WARN(1, "stop cmd time out\n");
+
+			if (IS_ERR_OR_NULL(ctl->panel_data)) {
+				pr_err("no panel data\n");
+			} else {
+				pinfo = &ctl->panel_data->panel_info;
+
+				if (pinfo->panel_dead) {
+					mdss_mdp_irq_disable
+						(MDSS_MDP_IRQ_PING_PONG_RD_PTR,
+								ctx->pp_num);
+					ctx->rdptr_enabled = 0;
+				}
+			}
+		}
 
 	if (cancel_work_sync(&ctx->clk_work))
 		pr_debug("no pending clk work\n");
@@ -575,11 +590,13 @@ int mdss_mdp_cmd_stop(struct mdss_mdp_ctl *ctl)
 	memset(ctx, 0, sizeof(*ctx));
 	ctl->priv_data = NULL;
 
-	ret = mdss_mdp_ctl_intf_event(ctl, MDSS_EVENT_BLANK, NULL);
-	WARN(ret, "intf %d unblank error (%d)\n", ctl->intf_num, ret);
+	if (ctl->num == 0) {
+		ret = mdss_mdp_ctl_intf_event(ctl, MDSS_EVENT_BLANK, NULL);
+		WARN(ret, "intf %d unblank error (%d)\n", ctl->intf_num, ret);
 
-	ret = mdss_mdp_ctl_intf_event(ctl, MDSS_EVENT_PANEL_OFF, NULL);
-	WARN(ret, "intf %d unblank error (%d)\n", ctl->intf_num, ret);
+		ret = mdss_mdp_ctl_intf_event(ctl, MDSS_EVENT_PANEL_OFF, NULL);
+		WARN(ret, "intf %d unblank error (%d)\n", ctl->intf_num, ret);
+	}
 
 	ctl->stop_fnc = NULL;
 	ctl->display_fnc = NULL;
