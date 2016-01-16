@@ -481,16 +481,6 @@ int __devexit msm_led_remove(struct platform_device *pdev)
 
 static int msm_led_suspend(struct device *dev)
 {
-//should always define CONFIG_MODEM_LED, this code only for test current,never used for normal purpose
-#ifndef CONFIG_MODEM_LED 
-	extern void led_set_sleep_time(int time);
-	int i;
-	for (i = 0; i < 2; i++)
-		if ((STATUS_LED->blink_led[i].blink_flag) && (STATUS_LED->blink_led[i].blink_led_flag))
-			led_set_sleep_time(STATUS_LED->blink_led[i].blink_on_time);
-		else if ((STATUS_LED->blink_led[i].blink_flag) && !(STATUS_LED->blink_led[i].blink_led_flag))
-			led_set_sleep_time(STATUS_LED->blink_led[i].blink_off_time);
-#endif
 	STATUS_LED->led_suspend_flag = 1;
 	return 0;
 }

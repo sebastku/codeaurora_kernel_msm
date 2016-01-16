@@ -501,6 +501,6 @@ CONFIG_USB_AT=y
 #ztebsp zhangjing add mac cdrom,20130506,--
 
 #[ECID:000000] ZTEBSP wanghaifei 201301107 for 8x10 color_led,start
-CONFIG_MODEM_LED=y
+#CONFIG_MODEM_LED=y
 CONFIG_LEDS_MSM_PMIC=y
 #[ECID:000000] ZTEBSP wanghaifei 201301107 for 8x10 color_led,end
