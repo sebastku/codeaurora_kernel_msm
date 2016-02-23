@@ -42,7 +42,8 @@
 		qcom,mdss-dsi-border-color = <0>;
 		qcom,mdss-dsi-bl-pmic-control-type = "bl_ctrl_wled";
 		qcom,mdss-dsi-bl-min-level = <1>;
-		qcom,mdss-dsi-bl-max-level = <4095>;
+		qcom,mdss-dsi-bl-max-level = <255>;
+		qcom,mdss-brightness-max-level = <255>;
 		qcom,mdss-pan-dsi-mode = <0>;
 		qcom,mdss-dsi-h-sync-pulse = <0>;
 		qcom,mdss-pan-dsi-h-power-stop = <0 0 0>;
@@ -110,6 +111,7 @@
 		somc,mdss-dsi-picadj-cont = <5>;
 	        somc,first-boot-aware;
 	        somc,panel-id-read-cmds;
+		somc,dric-only-detect;
 	        somc,panel-pwron-reset;
 	};
 
@@ -144,7 +146,8 @@
 		qcom,mdss-dsi-border-color = <0>;
 		qcom,mdss-dsi-bl-pmic-control-type = "bl_ctrl_wled";
 		qcom,mdss-dsi-bl-min-level = <1>;
-		qcom,mdss-dsi-bl-max-level = <4095>;
+		qcom,mdss-dsi-bl-max-level = <255>;
+		qcom,mdss-brightness-max-level = <255>;
 		qcom,mdss-pan-dsi-mode = <0>;
 		qcom,mdss-dsi-h-sync-pulse = <0>;
 		qcom,mdss-pan-dsi-h-power-stop = <0 0 0>;
@@ -203,6 +206,7 @@
 		qcom,cont-splash-enabled;
 	        somc,first-boot-aware;
 	        somc,panel-id-read-cmds;
+		somc,dric-only-detect;
 	        somc,panel-pwron-reset;
 	};
 
@@ -234,7 +238,8 @@
 		qcom,mdss-dsi-border-color = <0>;
 		qcom,mdss-dsi-bl-pmic-control-type = "bl_ctrl_wled";
 		qcom,mdss-dsi-bl-min-level = <1>;
-		qcom,mdss-dsi-bl-max-level = <4095>;
+		qcom,mdss-dsi-bl-max-level = <255>;
+               qcom,mdss-brightness-max-level = <255>;
 		qcom,mdss-pan-dsi-mode = <0>;
 		qcom,mdss-dsi-h-sync-pulse = <0>;
 		qcom,mdss-pan-dsi-h-power-stop = <0 0 0>;
